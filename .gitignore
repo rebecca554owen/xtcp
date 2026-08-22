@@ -1,0 +1,79 @@
+# Build artifacts
+build/
+bin/
+*.obj
+*.o
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+# IDE
+.vscode/
+.idea/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local backup snapshots (W3)
+.opencode/
+.opencode/backups/
+
+# local build trees
+build-audit/
+build-dbg/
+build-dbg-check/
+build-full/
+build-lwip/
+
+# scratch / logs
+qemu_full_*.txt
+
+build-linux/
+build-asan/
+build-asan-win/
+build_cksum/
+build_chk/
+build_dbg/
+build_asan_win/
+build_lwip/
+build_ndk/
+build_ndk_x64/
+
+build_wsl/
+build_chk2/
+build_asan_wsl/
+build_wsl_t/
+build-wsl/
+build-asan-wsl/
+build-cksum/
+build-x86/
+build-mingw/
+build-mingw-fresh/
+build-ndk-arm64/
+build-ndk-v7a/
+build-ndk-x64/
+build-ndk-x86/
+build-ndk20-arm64/
+build-ndk21-arm64/
+
+# scratch / logs
+bench_*.txt
+lwip_sources.txt
+*.log
+.vs/

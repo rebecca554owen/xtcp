@@ -1,0 +1,59 @@
+name: xtcp CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  linux:
+    name: Linux (GCC/Clang + ASan)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Release)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DXTCP_BUILD_PLUGINS=ON -DXTCP_BUILD_BENCH=ON -DXTCP_BUILD_SAMPLES=ON -DXTCP_BUILD_LWIP=ON -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+
+      - name: Build
+        run: cmake --build build -j $(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Configure (ASan/UBSan)
+        run: cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug -DXTCP_SANITIZE=ON -DXTCP_BUILD_PLUGINS=ON -DXTCP_BUILD_LWIP=ON -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+
+      - name: Build (ASan)
+        run: cmake --build build-asan -j $(nproc)
+
+      - name: Test (ASan - leak/UB detection, zero tolerance)
+        run: ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-asan --output-on-failure
+
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Release)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DXTCP_BUILD_PLUGINS=ON -DXTCP_BUILD_LWIP=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Configure (Debug)
+        run: cmake -B build-dbg -DCMAKE_BUILD_TYPE=Debug -DXTCP_BUILD_PLUGINS=ON -DXTCP_BUILD_LWIP=ON
+
+      - name: Build (Debug)
+        run: cmake --build build-dbg --config Debug
+
+      - name: Test (Debug)
+        run: ctest --test-dir build-dbg -C Debug --output-on-failure

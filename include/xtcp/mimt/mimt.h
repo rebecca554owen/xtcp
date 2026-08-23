@@ -16,6 +16,7 @@
  */
 
 #include <xtcp/stdafx.h>
+#include <xtcp/core/tcp.h>
 
 #include <deque>
 #include <functional>
@@ -183,6 +184,26 @@ namespace xtcp {
              */
             UInt64 ListenerKey() const noexcept { return listener_key_; }
 
+            /**
+             * @brief Stamps the connection identity on accept (VGWW relay
+             *        extension): conn handle plus BOTH endpoints. `local` is
+             *        the ORIGINAL DESTINATION the client aimed at (the whole
+             *        point of transparent gateway mode); `remote` is the
+             *        client. Set by the owning stack in BindDataPath.
+             */
+            void SetOrigin(UInt64 conn_id, const core::Endpoint& local,
+                           const core::Endpoint& remote) noexcept {
+                conn_id_ = conn_id;
+                local_ = local;
+                remote_ = remote;
+            }
+            /** @brief Connection handle (0 when not stamped). */
+            UInt64 ConnId() const noexcept { return conn_id_; }
+            /** @brief Original destination endpoint (client's target). */
+            const core::Endpoint& Local() const noexcept { return local_; }
+            /** @brief Client endpoint. */
+            const core::Endpoint& Remote() const noexcept { return remote_; }
+
         private:
             struct PendingRead {
                 void*       buf = NULLPTR;
@@ -213,6 +234,9 @@ namespace xtcp {
             std::function<bool(const Byte*, UInt32)> write_sink_;
             bool          closed_ = false;
             UInt64        listener_key_ = 0;  /**< Accept-routing key (which listener accepted this flow) */
+            UInt64        conn_id_ = 0;       /**< Owning connection handle (SetOrigin) */
+            core::Endpoint local_{};
+            core::Endpoint remote_{};
             /**
              * @brief Serializes all flow state (async ops vs event-loop
              *        dispatch). The lock order is always shard -> flow

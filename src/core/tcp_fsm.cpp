@@ -4481,12 +4481,14 @@ namespace xtcp {
                                 ++rcv_nxt_;
                                 SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
                                 Transition(TcpState::kCloseWait);
+                                NotifyStateChanged();  // peer half-closed: the app must see it
                                 break;
                             }
                         }
                         if (hdr.IsFin()) {
                             SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
                             Transition(TcpState::kCloseWait);
+                            NotifyStateChanged();  // peer half-closed: the app must see it
                         } else if (quickack_) {
                             // TCP_QUICKACK: ACK every segment immediately.
                             // Linux one-shot semantics: the flag is cleared by

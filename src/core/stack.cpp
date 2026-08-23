@@ -1180,7 +1180,7 @@ namespace xtcp {
         }
         entry->conn->SetEcnRequested(default_ecn_);
         entry->conn->SetNoSackPermitted(default_no_sack_);
-        BindDataPath(id, *shard, entry->local, *entry->conn, false);
+        BindDataPath(id, *shard, entry->local, entry->remote, *entry->conn, false);
         shard->conns_[id] = entry;
         shard->FlowInsert(fh2, key2, shard->conns_[id]);
         // RFC 7413: one SYN carrying the cookie (if known) and the early data.
@@ -1314,7 +1314,7 @@ namespace xtcp {
         }
         entry->conn->SetEcnRequested(default_ecn_);
         entry->conn->SetNoSackPermitted(default_no_sack_);
-        BindDataPath(id, *shard, entry->local, *entry->conn, false);
+        BindDataPath(id, *shard, entry->local, entry->remote, *entry->conn, false);
 
         shard->conns_[id] = entry;
         shard->FlowInsert(fh2, key2, shard->conns_[id]);
@@ -1323,7 +1323,8 @@ namespace xtcp {
         return id;
     }
 
-    void XtcpStack::BindDataPath(UInt64 id, Shard& shard, const core::Endpoint& local, core::TcpConn& conn,
+    void XtcpStack::BindDataPath(UInt64 id, Shard& shard, const core::Endpoint& local,
+                                 const core::Endpoint& remote, core::TcpConn& conn,
                                  bool as_accept) noexcept {
         // Bug(state-cb): timer-driven transitions (RTO exhaustion, keepalive
         // abort, FIN-WAIT-2 timeout) never reached the application - the only
@@ -1376,6 +1377,7 @@ namespace xtcp {
             hook = (NULLPTR != mimt_on_flow_);
             if (hook) {
                 auto flow = std::make_shared<mimt::MimtFlow>();
+                flow->SetOrigin(id, local, remote);
                 shard.mimt_flows_[id] = flow;
                 // Stamp which listener accepted this flow: the async layer
                 // routes each accept to its per-listener callback via this key
@@ -1721,11 +1723,20 @@ namespace xtcp {
     UInt32 XtcpStack::DispatchMimt() noexcept {
         UInt32 fired = 0;
         for (UInt32 i = 0; i < kShardCount; ++i) {
-            Shard& shard = shards_[i];
-            std::lock_guard<std::recursive_mutex> scope(shard.syncobj_);
-            for (auto& kv : shard.mimt_flows_) {
-                fired += kv.second->Dispatch();
-            }
+            fired += DispatchMimt(i);
+        }
+        return fired;
+    }
+
+    UInt32 XtcpStack::DispatchMimt(UInt32 shard_index) noexcept {
+        if (shard_index >= kShardCount) {
+            return 0;
+        }
+        UInt32 fired = 0;
+        Shard& shard = shards_[shard_index];
+        std::lock_guard<std::recursive_mutex> scope(shard.syncobj_);
+        for (auto& kv : shard.mimt_flows_) {
+            fired += kv.second->Dispatch();
         }
         return fired;
     }
@@ -2077,7 +2088,7 @@ namespace xtcp {
                     (tcp.flags & (core::kFlagEce | core::kFlagCwr)) ==
                     (core::kFlagEce | core::kFlagCwr);
                 entry->conn->SetEcnRequested(default_ecn_ && client_offered_ecn);
-                BindDataPath(id, *shard, entry->local, *entry->conn, true);
+                BindDataPath(id, *shard, entry->local, entry->remote, *entry->conn, true);
                 // RFC 7323: parse the peer's WSOPT from the SYN; the peer
                 // advertises its window already scaled by this factor.
                 {
@@ -2308,7 +2319,7 @@ namespace xtcp {
                     // never armed (the ECE gates live in the SYN+ACK/completing-
                     // ACK paths) and the connection runs non-ECN regardless.
                     entry->conn->SetPeerMss(mss);
-                    BindDataPath(id, *shard, entry->local, *entry->conn, true);
+                    BindDataPath(id, *shard, entry->local, entry->remote, *entry->conn, true);
                     shard->conns_[id] = entry;
                     shard->FlowInsert(fh, key, shard->conns_[id]);
                     if (NULLPTR != accept_handler_ &&
@@ -2387,5 +2398,7 @@ namespace xtcp {
         return iss;
     }
 }
+
+
 
 

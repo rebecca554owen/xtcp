@@ -289,12 +289,36 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
          */
         UInt32 DispatchMimt() noexcept;
         /**
+         * @brief Dispatches pending MIMT flow completions for ONE shard.
+         *
+         * Shard-affine event loops (one worker owning shards
+         * {index, index+kShardCount, ...}) must use this overload instead of
+         * the all-shard sweep: flow callbacks then always fire on the owning
+         * worker's thread, restoring the single-threaded relay invariant and
+         * eliminating cross-worker shard-lock contention.
+         * @param shard_index Shard to pump (must be < kShardCount).
+         * @return Number of completions dispatched on that shard.
+         */
+        UInt32 DispatchMimt(UInt32 shard_index) noexcept;
+        /**
+         * @brief Static shard index encoded in a conn_id ((id >> 56) % kShardCount).
+         */
+        static UInt32 ShardIndexOf(UInt64 conn_id) noexcept {
+            return static_cast<UInt32>(conn_id >> 56) % kShardCount;
+        }
+        /**
          * @brief Sweeps timer-driven work on all connections (delayed-ACK,
          *        RTO/TLP/persist/keepalive/user-timeout timers, buffered
          *        flushes, DMA retry drain, closed/TIME-WAIT reclamation).
          * @return Number of timer events fired across all connections.
          */
         UInt32 PollAckTimers() noexcept;
+        /**
+         * @brief Sweeps timer-driven work for ONE shard (shard-affine loops).
+         * @param shard_index Shard to sweep (must be < kShardCount).
+         * @return Number of timer events fired on that shard.
+         */
+        UInt32 PollAckTimers(UInt32 shard_index) noexcept;
         /**
          * @brief Total live connections (all shards).
          */
@@ -910,7 +934,8 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
          *  fallback: a wildcard listener's key enforces MD5 for SYNs to any
          *  specific destination (mirror of ListenerMatches). */
         bool LookupListenerMd5Key(const core::Endpoint& dst, Byte* out_key, UInt32* out_len) const noexcept;
-        void BindDataPath(UInt64 id, Shard& shard, const core::Endpoint& local, core::TcpConn& conn,
+        void BindDataPath(UInt64 id, Shard& shard, const core::Endpoint& local,
+                          const core::Endpoint& remote, core::TcpConn& conn,
                           bool as_accept) noexcept;
         Shard* ShardOf(const core::FlowKey& key) noexcept;
 
@@ -953,3 +978,5 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
         std::atomic<UInt64>      tx_count_[kShardCount]; /**< Packets emitted per shard (avoids a shared atomic line) */
     };
 }
+
+

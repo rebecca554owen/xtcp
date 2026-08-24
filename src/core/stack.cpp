@@ -1493,6 +1493,130 @@ namespace xtcp {
         }
     }
 
+    UInt32 XtcpStack::PollAckTimers(UInt32 shard_index) noexcept {
+        const UInt64 now = GetTickUs();
+        UInt32 sent = 0;
+        if (kShardCount <= shard_index) {
+            return 0;
+        }
+        Shard& shard = shards_[shard_index];
+        // Fast path: only dirty shards pay for the lock + traversal.
+        if (!shard.sweep_hint_.load(std::memory_order_relaxed)) {
+            // Global tails still belong to the shard-0 affine caller so a
+            // stack that never sweeps shard 0 never leaks fragments.
+            if (0 == shard_index) {
+                if (0 < ipfrag_.SetCount()) {
+                    std::lock_guard<std::recursive_mutex> ipfrag_lock(syncobj_);
+                    ipfrag_.Expire(now);
+                }
+                const core::TimePoint qdisc_next = qdisc_next_pacing_.load(std::memory_order_relaxed);
+                if (NULLPTR != tx_qdisc_ && 0 != qdisc_next && qdisc_next <= now) {
+                    DrainTxQdisc(now);
+                }
+            }
+            return sent;
+        }
+        std::lock_guard<std::recursive_mutex> scope(shard.syncobj_);
+        shard.sweep_hint_.store(0, std::memory_order_relaxed);
+        bool any_dirty = false;
+        {
+            Shard::TxRetry* chain = shard.tx_retry_head_.exchange(nullptr, std::memory_order_acquire);
+            if (NULLPTR != chain) {
+                Shard::TxRetry* fifo = NULLPTR;
+                Shard::TxRetry* fifo_tail = NULLPTR;
+                while (NULLPTR != chain) {
+                    Shard::TxRetry* nxt = chain->next;
+                    chain->next = fifo;
+                    if (NULLPTR == fifo) {
+                        fifo_tail = chain;
+                    }
+                    fifo = chain;
+                    chain = nxt;
+                }
+                while (NULLPTR != fifo) {
+                    Shard::TxRetry* nxt = fifo->next;
+                    ndi::Packet out;
+                    out.data = fifo->ref.Data();
+                    out.len = fifo->ref.Len();
+                    out.eth_type = fifo->eth_type;
+                    out.owned = fifo->ref.Clone();
+                    if (!backend_->Tx(std::move(out))) {
+                        fifo_tail->next = shard.tx_retry_head_.load(std::memory_order_relaxed);
+                        while (!shard.tx_retry_head_.compare_exchange_weak(
+                                   fifo_tail->next, fifo, std::memory_order_release,
+                                   std::memory_order_relaxed)) {
+                        }
+                        break;
+                    }
+                    delete fifo;
+                    shard.tx_retry_count_.fetch_sub(1, std::memory_order_relaxed);
+                    fifo = nxt;
+                    any_dirty = true;
+                }
+            }
+            if (NULLPTR != shard.tx_retry_head_.load(std::memory_order_relaxed)) {
+                any_dirty = true;
+            }
+        }
+        for (auto it = shard.conns_.begin(); it != shard.conns_.end();) {
+            ConnEntry* e = it->second;
+            if (NULLPTR == e || NULLPTR == e->conn) {
+                ++it;
+                continue;
+            }
+            if (!e->conn->TimersDirty()) {
+                ++it;
+                continue;
+            }
+            sent += e->conn->OnPoll(now);
+            any_dirty = true;
+            const bool closed = (core::TcpState::kClosed == e->conn->State());
+            const bool tw_done = (core::TcpState::kTimeWait == e->conn->State() &&
+                                  0 != e->conn->TimeWaitDeadline() &&
+                                  e->conn->TimeWaitDeadline() <= now);
+            if (closed || tw_done) {
+                {
+                    const UInt64 fh = Shard::FlowHashOf(e->key);
+                    if (shard.FlowFind(fh, e->key) == e) {
+                        shard.FlowErase(fh, e->key);
+                    }
+                }
+                auto mfit = shard.mimt_flows_.find(it->first);
+                if (mfit != shard.mimt_flows_.end()) {
+                    mfit->second->Close();
+                    shard.mimt_flows_.erase(mfit);
+                }
+                if (NULLPTR != tx_qdisc_ && NULLPTR != tx_qdisc_->ops &&
+                    NULLPTR != tx_qdisc_->ops->remove_flow) {
+                    const int dropped = tx_qdisc_->ops->remove_flow(tx_qdisc_, it->first);
+                    if (0 < dropped) {
+                        std::atomic<UInt64>& txc =
+                            tx_count_[(static_cast<UInt32>(it->first >> 56)) % kShardCount];
+                        txc.fetch_sub(static_cast<UInt64>(dropped), std::memory_order_relaxed);
+                    }
+                }
+                shard.slab_.FreeSlot(e);
+                it = shard.conns_.erase(it);
+                conn_count_.fetch_sub(1, std::memory_order_relaxed);
+                continue;
+            }
+            ++it;
+        }
+        shard.sweep_hint_.fetch_or(any_dirty ? 1u : 0u, std::memory_order_relaxed);
+        // Global tails owned by the shard-0 affine caller.
+        if (0 == shard_index) {
+            if (0 < ipfrag_.SetCount()) {
+                std::lock_guard<std::recursive_mutex> ipfrag_lock(syncobj_);
+                ipfrag_.Expire(now);
+            }
+            const core::TimePoint qdisc_next = qdisc_next_pacing_.load(std::memory_order_relaxed);
+            if (NULLPTR != tx_qdisc_ && 0 != qdisc_next && qdisc_next <= now) {
+                DrainTxQdisc(now);
+            }
+        }
+        return sent;
+    }
+
     UInt32 XtcpStack::PollAckTimers() noexcept {
         const UInt64 now = GetTickUs();
         UInt32 sent = 0;

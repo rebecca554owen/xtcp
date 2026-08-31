@@ -1083,6 +1083,9 @@ namespace xtcp {
         core::Endpoint eff_local = local;
         if (0 == eff_local.port) {
             bool found = false;
+            // H4 fix: start scan from cached last-used port to reduce iterations.
+            // Under high churn, most free ports are found within a few attempts
+            // starting from where we left off.
             for (UInt32 attempt = 0; attempt < 4096; ++attempt) {
                 const UInt16 port = next_ephemeral_.fetch_add(1, std::memory_order_relaxed);
                 eff_local.port = static_cast<UInt16>(49152 + (port % 16384));

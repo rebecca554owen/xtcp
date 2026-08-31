@@ -986,6 +986,20 @@ namespace xtcp {
             std::map<UInt32, OutSeg> ooo_;       /**< Out-of-order reassembly buffer (seq -> segment) */
             UInt32      ooo_bytes_ = 0;
             std::deque<SentSeg> retrans_queue_;
+            size_t      retrans_queue_bytes_ = 0; /**< Total bytes queued in retrans_queue_ (C2: cap enforcement) */
+            static constexpr size_t kMaxRetransQueueBytes = 1048576;  /**< 1 MiB per-conn cap (C2 fix) */
+
+            /**
+             * @brief Enforce the per-connection retransmission queue byte cap (C2 fix).
+             *        Drops oldest segments from the front until under cap.
+             */
+            void EnforceRetransQueueCap() noexcept {
+                while (!retrans_queue_.empty() && retrans_queue_bytes_ > kMaxRetransQueueBytes) {
+                    size_t front_size = retrans_queue_.front().data.Len();
+                    retrans_queue_bytes_ -= front_size;
+                    retrans_queue_.pop_front();
+                }
+            }
 
             Byte        md5_key_[64];
             UInt32      md5_key_len_ = 0;

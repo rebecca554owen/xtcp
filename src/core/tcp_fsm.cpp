@@ -1753,15 +1753,15 @@ namespace xtcp {
                     // TSval advances TsRecent (the PAWS anchor).
                     if (0 != seg.ts_val) {
                         ts_recent_ = seg.ts_val;
-                            ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
+                        ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
                     }
                     if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
                         // Backpressure: drop this buffered segment (refund its
                         // bytes) and stop draining; the peer retransmits.
                         rcv_nxt_ = prev_drain;  // rollback
-                                rcv_blocked_ = true;  // advertise window 0 (RFC 1122 s4.2.3.4)
-                                ArmWindowUpdateAck(now);
-                                ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
+                        rcv_blocked_ = true;  // advertise window 0 (RFC 1122 s4.2.3.4)
+                        ArmWindowUpdateAck(now);
+                        ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
                         ooo_.erase(it);
                         break;
                     }
@@ -1833,7 +1833,7 @@ namespace xtcp {
                                 break;
                             }
                             if (TcpState::kClosed == state_) {
-                                // The recv handler aborted reentrantly: stop.
+                                // The receive handler aborted reentrantly: stop.
                                 return false;
                             }
                             ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
@@ -3047,6 +3047,8 @@ namespace xtcp {
             // WSL regression). With the push first, a reentrant ACK sees the
             // complete queue and drains the segment normally.
             retrans_queue_.push_back(std::move(seg));
+            retrans_queue_bytes_ += seg.data.Len();
+            EnforceRetransQueueCap();
             if (1 == retrans_queue_.size()) {
                 ArmRetransmit(now);
                 // TCP_USER_TIMEOUT anchor: the send time of the OLDEST
@@ -3165,6 +3167,8 @@ namespace xtcp {
                                 sink_(seg.data.Clone());
                             }
                             retrans_queue_.push_back(std::move(seg));
+                            retrans_queue_bytes_ += seg.data.Len();
+                            EnforceRetransQueueCap();
                             if (1 == retrans_queue_.size()) {
                                 ArmRetransmit(now);
                                 first_outstanding_ = now;  // TCP_USER_TIMEOUT anchor (Karn-immune)
@@ -3508,6 +3512,8 @@ namespace xtcp {
                 // reentrantly inside sink_(), and a queue missing this
                 // segment would advance snd_una_ past it, never reaping it.
                 retrans_queue_.push_back(std::move(seg));
+                retrans_queue_bytes_ += seg.data.Len();
+                EnforceRetransQueueCap();
                 if (1 == retrans_queue_.size()) {
                     ArmRetransmit(now);
                     first_outstanding_ = now;  // TCP_USER_TIMEOUT anchor (Karn-immune)
@@ -3619,6 +3625,7 @@ namespace xtcp {
                 c.sacked = s.sacked;
                 c.data = const_cast<buf::BufRef&>(s.data).Clone();
                 retrans_queue_.push_back(std::move(c));
+                retrans_queue_bytes_ += c.data.Len();
             }
             if (0 < retrans_queue_.size()) {
                 // In-flight segments survived the migration: the RTO must
@@ -4154,6 +4161,8 @@ namespace xtcp {
                                     ++retransmit_count_;
                                 }
                                 retrans_queue_.push_front(std::move(seg));
+                                retrans_queue_bytes_ += seg.data.Len();
+                                EnforceRetransQueueCap();
                                 ArmRetransmit(now);
                             }
                         }
@@ -4466,7 +4475,7 @@ namespace xtcp {
                                 break;
                             }
                             if (TcpState::kEstablished != state_) {
-                                // The recv handler closed or aborted this
+                                // The receive handler closed or aborted this
                                 // connection reentrantly - stop draining and
                                 // exit OnSegment (a later Transition would
                                 // resurrect/regress the closed connection).

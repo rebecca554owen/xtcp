@@ -36,19 +36,7 @@ namespace xtcp {
         }
 
         void TimerWheel::Remove(TimerId id) noexcept {
-            const std::vector<Entry>& heap =
-                HeapContainerAccess<Entry, std::vector<Entry>, std::greater<Entry>>::Get(heap_);
-            bool pending = false;
-            for (const Entry& e : heap) {
-                if (e.seq == id) {
-                    pending = true;
-                    break;
-                }
-            }
-            if (!pending) {
-                return;  // already fired (popped) or never added: nothing to cancel
-            }
-            if (cancel_set_.insert(id).second) {
+            if (cancel_set_.erase(id)) {
                 if (0 < live_) {
                     --live_;
                 }

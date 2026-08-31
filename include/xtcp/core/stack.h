@@ -113,6 +113,21 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
          */
         bool StopListen(const core::Endpoint& local) noexcept;
         /**
+         * @brief Sets the maximum number of concurrent connections (C3 fix).
+         * @param max Maximum connections (0 = use default 65536).
+         */
+        void SetMaxConnections(UInt32 max) noexcept {
+            max_conns_ = (0 < max) ? max : 65536;
+        }
+        /**
+         * @brief Sets the TIME-WAIT reclamation timeout (C3 fix).
+         * @param seconds TIME-WAIT timeout in seconds (0 = use default 30).
+         */
+        void SetTimeWaitTimeout(UInt32 seconds) noexcept {
+            two_msl_us_ = ((0 < seconds) ? seconds : 30) * 1000000;
+        }
+
+        /**
          * @brief Initiates a connection (active open, sends SYN).
          * @return ConnId, or 0 on failure.
          */
@@ -360,10 +375,6 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
          * @brief TIME-WAIT reclamation deadline of a connection (diagnostics).
          */
         UInt64 ConnTimeWaitDeadline(UInt64 conn_id) const noexcept;
-        /**
-         * @brief Sets the hard cap on live connections (SYN-flood bound).
-         */
-        void SetMaxConnections(UInt32 n) noexcept { max_conns_ = (0 == n) ? 1 : n; }
         /**
          * @brief Configures the receive-buffer capacity (advertised receive
          *        window) for every connection created from now on. Applied at
@@ -782,6 +793,7 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
             UInt32              flow_mask_ = 0;  /**< capacity - 1 (0 = uninitialized) */
             UInt32              flow_live_ = 0;  /**< live routes */
             UInt32              flow_used_ = 0;  /**< live + tombstones */
+            UInt32              last_ephemeral_port_ = 0;  /**< H4 fix: cached last-used ephemeral port per shard */
 
             static UInt64 FlowHashOf(const core::FlowKey& key) noexcept {
                 // Mirror of stack.cpp FinalMix (the shard-selection
@@ -955,13 +967,13 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
         core::IpFragTable            ipfrag_;   /**< IP fragment reassembly (RFC 791/8200); single instance (non-first fragments carry no ports to shard on); guarded by syncobj_ */
         std::atomic<UInt64>      next_id_{0};   /**< Global connection counter (shard-encoded ids) */
         std::atomic<UInt32>      conn_count_{0};/**< Live connections (all shards) */
-        UInt32                   max_conns_ = 16384;  /**< Hard cap (SYN-flood / memory bound) */
+        UInt32                   max_conns_ = 65536;  /**< Hard cap (SYN-flood / memory bound); configurable via API (C3 fix: was 16384) */
         std::string              default_cc_ = "kcc";  /**< CC algorithm for new connections (KCC is the default; "" = Reno, "kcc"/"bbr"/"cubic" selectable) */
         bool                     default_ecn_ = false;  /**< RFC 3168 ECN on new connections */
         bool                     default_no_sack_ = false;  /**< Suppress SACK-permitted on new connections */
         core::Syncookies         syncookies_;  /**< RFC 4987 stateless SYN-flood defense */
         UInt32                   syncookie_threshold_ = 0;  /**< Cookie mode above this many live conns (0 = use max_conns_) */
-        UInt32                   two_msl_us_ = 120 * 1000000;  /**< 2MSL for TIME-WAIT reclamation (us) */
+        UInt32                   two_msl_us_ = 30 * 1000000;  /**< 2MSL for TIME-WAIT reclamation (us) (C3 fix: was 120s, now 30s) */
         UInt32                   rcv_buf_ = 0;  /**< Receive-buffer capacity for new conns (0 = 65535 default) */
         UInt32                   snd_buf_ = 0;  /**< Send-buffer quota for new conns (0 = 65536 default) */
         std::atomic<UInt16>      next_ephemeral_{49152};  /**< Ephemeral port allocator (IANA dynamic range) */

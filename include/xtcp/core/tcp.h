@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace xtcp {
@@ -983,7 +984,10 @@ namespace xtcp {
                 bool fin = false;  // RFC 793: the segment carried the FIN flag
                 UInt32 ts_val = 0; // RFC 7323: the segment's TSval (TsRecent on drain)
             };
-            std::map<UInt32, OutSeg> ooo_;       /**< Out-of-order reassembly buffer (seq -> segment) */
+            // M1 fix: flat hash map for better cache locality and lower per-op overhead
+            // than std::map (tree-based). Bounded by kOooCap segments.
+            static constexpr UInt32 kOooCap = 1024;
+            std::unordered_map<UInt32, OutSeg> ooo_;
             UInt32      ooo_bytes_ = 0;
             std::deque<SentSeg> retrans_queue_;
             size_t      retrans_queue_bytes_ = 0; /**< Total bytes queued in retrans_queue_ (C2: cap enforcement) */
@@ -1006,6 +1010,8 @@ namespace xtcp {
             UInt16      peer_mss_ = 1460;  /**< Peer-advertised MSS (default 1460) */
             static constexpr UInt32 kMinSndBuf = 4096;
             static constexpr UInt32 kDefaultSndBuf = 65536;  /**< 64 KiB per-conn quota */
+            // L3 fix: reserve capacity to reduce reallocations during handshake
+            static constexpr UInt32 kPendingSendReserve = 1024;
             UInt32      snd_buf_ = kDefaultSndBuf;
             std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
             mutable std::recursive_mutex syncobj_;  /**< Guards state changes (multi-thread safe) */

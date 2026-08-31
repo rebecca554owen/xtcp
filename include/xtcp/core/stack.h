@@ -17,6 +17,7 @@
 #include <xtcp/qdisc/qdisc.h>
 #include <xtcp/options/options.h>
 #include <deque>
+#include <list>
 
 #include <array>
 #include <atomic>
@@ -982,11 +983,13 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
         std::atomic<UInt32>          closed_rst_count_ = 0;   /**< Closed-port RSTs sent in the current 1s window (Linux tcp_rst_ratelimit token bucket; best-effort, relaxed atomics - OnPacket runs per-shard concurrently) */
         std::atomic<core::TimePoint> closed_rst_window_ = 0;  /**< Closed-port RST window end (us; 0 = first SYN after (re)arm) */
         mutable std::recursive_mutex tfo_sync_;  /**< Guards tfo_cookies_ */
-        // peer hash -> (TFO cookie, last-use ticks). Bounded (kTfoCookieCacheMax)
-    // with oldest-first eviction: an unbounded cache grows without limit as
-    // a long-lived client meets distinct remotes (audit C-1).
-    static constexpr UInt32 kTfoCookieCacheMax = 64;
-    mutable std::unordered_map<UInt64, std::pair<std::array<Byte, 8>, UInt64>> tfo_cookies_;
+        // M4 fix: O(1) LRU eviction using doubly-linked list + hash map.
+        // List maintains access order (front = most recent), map provides O(1) lookup.
+        static constexpr UInt32 kTfoCookieCacheMax = 64;
+        // L1 fix: bound listener_md5_ map to prevent unbounded growth
+        static constexpr UInt32 kListenerMd5Max = 1024;
+        mutable std::list<std::pair<UInt64, std::array<Byte, 8>>> tfo_list_;
+        mutable std::unordered_map<UInt64, decltype(tfo_list_.begin())> tfo_map_;
         std::atomic<UInt64>      tx_count_[kShardCount]; /**< Packets emitted per shard (avoids a shared atomic line) */
     };
 }

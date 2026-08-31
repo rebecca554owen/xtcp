@@ -964,31 +964,34 @@ namespace xtcp {
         std::lock_guard<std::recursive_mutex> scope(tfo_sync_);
         std::array<Byte, 8> buf{};
         std::memcpy(buf.data(), cookie, 8);
-        tfo_cookies_[h] = {buf, now};
-        if (kTfoCookieCacheMax < tfo_cookies_.size()) {
-            // Bounded cache (audit C-1): evict the least-recently-used entry.
-            UInt64 oldest_key = h;
-            UInt64 oldest_tick = now;
-            for (const auto& kv : tfo_cookies_) {
-                if (kv.second.second < oldest_tick) {
-                    oldest_tick = kv.second.second;
-                    oldest_key = kv.first;
-                }
+        // M4 fix: O(1) LRU update. If key exists, move to front; otherwise insert.
+        auto it = tfo_map_.find(h);
+        if (it != tfo_map_.end()) {
+            // Key exists: move to front (most recent)
+            tfo_list_.splice(tfo_list_.begin(), tfo_list_, it->second);
+            it->second->second = buf;
+        } else {
+            // New key: insert at front
+            tfo_list_.emplace_front(h, buf);
+            tfo_map_[h] = tfo_list_.begin();
+            // Evict oldest if over cap
+            if (kTfoCookieCacheMax < tfo_map_.size()) {
+                tfo_map_.erase(tfo_list_.back().first);
+                tfo_list_.pop_back();
             }
-            tfo_cookies_.erase(oldest_key);
         }
     }
 
     bool XtcpStack::GetTfoCookieFor(const core::Endpoint& remote, Byte out[8]) const noexcept {
         const UInt64 h = EndpointKey(remote);
         std::lock_guard<std::recursive_mutex> scope(tfo_sync_);
-        auto it = tfo_cookies_.find(h);
-        if (it == tfo_cookies_.end()) {
+        auto it = tfo_map_.find(h);
+        if (it == tfo_map_.end()) {
             return false;
         }
-        std::memcpy(out, it->second.first.data(), 8);
-        // Refresh the last-use tick so the LRU eviction keeps hot remotes.
-        it->second.second = GetTickUs();
+        std::memcpy(out, it->second->second.data(), 8);
+        // M4 fix: move to front on access (LRU)
+        tfo_list_.splice(tfo_list_.begin(), tfo_list_, it->second);
         return true;
     }
 
@@ -1014,6 +1017,10 @@ namespace xtcp {
     void XtcpStack::SetMd5KeyForListener(const core::Endpoint& local, const Byte* key, UInt32 len) noexcept {
         std::lock_guard<std::recursive_mutex> scope(syncobj_);
         const UInt64 h = EndpointKey(local);
+        // L1 fix: bound listener_md5_ map to prevent unbounded growth
+        if (listener_md5_.size() >= kListenerMd5Max && listener_md5_.find(h) == listener_md5_.end()) {
+            return;  // At cap and new key; refuse to grow further
+        }
         std::array<Byte, 64> buf{};
         UInt32 n = (len > 64) ? 64 : len;
         if (NULLPTR != key && 0 < n) {

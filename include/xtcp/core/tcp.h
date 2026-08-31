@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace xtcp {
@@ -1246,6 +1247,8 @@ namespace xtcp {
             UInt16      peer_mss_ = 1460;  /**< Peer-advertised MSS (default 1460) */
             static constexpr UInt32 kMinSndBuf = 4096;
             static constexpr UInt32 kDefaultSndBuf = 65536;  /**< 64 KiB per-conn quota */
+            // L3 fix: reserve capacity to reduce reallocations during handshake
+            static constexpr UInt32 kPendingSendReserve = 1024;
             UInt32      snd_buf_ = kDefaultSndBuf;
             std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
             std::size_t pending_send_offset_ = 0; /**< Avoid copying the unsent suffix after a partial flush */

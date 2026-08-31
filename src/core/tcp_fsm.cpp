@@ -839,6 +839,8 @@ namespace xtcp {
             cc_.mss = peer_mss_;
             cc_.rcv_wnd = rcv_wnd_;
             cc_.snd_wnd = snd_wnd_;
+            // L3 fix: reserve capacity to reduce reallocations during handshake
+            pending_send_.reserve(kPendingSendReserve);
         }
 
         TcpConn::~TcpConn() noexcept {
@@ -1764,6 +1766,18 @@ namespace xtcp {
                 const UInt32 wnd_end = rcv_nxt_ + rcv_wnd_;
                 if (SeqLt(seq, wnd_end) || seq == wnd_end) {
                     if (ooo_.find(seq) == ooo_.end()) {
+                        // M1 fix: bound the out-of-order buffer to prevent unbounded growth
+                        if (ooo_.size() >= kOooCap) {
+                            // Drop oldest segment to keep within cap
+                            auto oldest = ooo_.begin();
+                            for (auto it = ooo_.begin(); it != ooo_.end(); ++it) {
+                                if (SeqLt(it->first, oldest->first)) {
+                                    oldest = it;
+                                }
+                            }
+                            ooo_bytes_ -= static_cast<UInt32>(oldest->second.data.size());
+                            ooo_.erase(oldest);
+                        }
                         OutSeg entry;
                         entry.fin = true;
                         ooo_[seq] = std::move(entry);

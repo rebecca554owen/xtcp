@@ -12,6 +12,7 @@
 #include <xtcp/core/ip.h>
 #include <xtcp/core/scheduler.h>
 #include <xtcp/core/tcp.h>
+#include <xtcp/core/telemetry_compat.h>
 #include <xtcp/mimt/mimt.h>
 #include <xtcp/core/syncookies.h>
 #include <xtcp/qdisc/qdisc.h>
@@ -739,6 +740,19 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
          *        lock so different connections process in parallel on multi-core.
          */
     public:
+
+    // openppp2 XtcpRuntime compatibility stubs
+    bool ConnLastSendAdmission(UInt64 conn_id, core::SendAdmissionSnapshot& snap) noexcept {
+        snap = {};
+        return false;
+    }
+    core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() noexcept { return {}; }
+    core::TsoGateTelemetrySnapshot TsoGateTelemetry() noexcept { return {}; }
+    bool ResumeReceive(UInt64 conn_id) noexcept { return true; }
+    core::ReceiveResumeResult ResumeReceiveDetailed(UInt64 conn_id, core::ReceiveStateSnapshot* state = nullptr) noexcept {
+        if (state) *state = {};
+        return core::ReceiveResumeResult::kResumed;
+    }
         struct Shard {
             std::recursive_mutex                              syncobj_;
             ConnSlab                                        slab_;  /**< ConnEntry/TcpConn pool (perf #4) */

@@ -41,6 +41,7 @@ namespace xtcp {
              *        it receives carry valid checksums.
              */
             kCapChecksumTx  = 0x0004,  /**< Hardware TX checksum offload */
+            kCapChecksumPartialTx = 0x0008,  /**< Partial TX checksum offload (TCP/UDP only) */
         };
 
         /**

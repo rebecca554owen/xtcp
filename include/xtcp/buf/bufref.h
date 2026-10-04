@@ -37,6 +37,7 @@ namespace xtcp {
             UInt32 gso_size = 0;  /**< Bytes per GSO segment */
             UInt16 mss      = 0;  /**< TCP MSS */
             UInt16 segs     = 0;  /**< Segment count */
+            bool checksum_partial = false;  /**< Partial checksum (TCP/UDP) valid */
         };
 
         /**

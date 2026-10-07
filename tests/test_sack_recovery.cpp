@@ -47,9 +47,13 @@ static void PumpDrop(xtcp::ndi::ManualBackend& from, xtcp::ndi::ManualBackend& t
         if (0 == got) {
             break;
         }
-        // Parse: IPv4 (20B) + TCP (>=20B). flags at tcp offset 13, seq at 4.
-        const UInt32 tcp_off = 20;
-        const bool data = (got > tcp_off + 13) && (0 != (out[tcp_off + 13] & 0x08));  // PSH
+        // PSH is advisory; payload length identifies data segments for loss injection.
+        const UInt32 ip_hlen = got >= 20 ? static_cast<UInt32>(out[0] & 0x0fU) * 4U : 0;
+        const UInt32 tcp_off = ip_hlen;
+        const UInt32 tcp_hlen = got >= tcp_off + 20 ? static_cast<UInt32>(out[tcp_off + 12] >> 4U) * 4U : 0;
+        const UInt32 ip_total = got >= 4 ? (static_cast<UInt32>(out[2]) << 8U) | out[3] : 0;
+        const bool data = ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
+                          ip_total > ip_hlen + tcp_hlen;
         bool drop = false;
         if (data) {
             const UInt32 seq = (static_cast<UInt32>(out[tcp_off + 4]) << 24) |

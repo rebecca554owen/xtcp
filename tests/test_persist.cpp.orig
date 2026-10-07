@@ -150,29 +150,6 @@ static void TestZeroWindowProbe() {
     CHECK(0 == conn->PendingSendBytes());  // the probe byte is gone too
 }
 
-static void TestFullWindowSuppressesPacingWake() {
-    TxLog log;
-    auto conn = MakeConn(log);
-    CHECK(conn->SetCongestionControl("persist_paced"));
-
-    // Leave a non-zero but completely full peer window with more data
-    // buffered. A pacing tick cannot release any additional bytes.
-    const std::vector<Byte> ack = BuildAck(201, 80);
-    conn->OnSegment(ack.data(), static_cast<UInt32>(ack.size()), 1000);
-    Byte data[200];
-    std::memset(data, 0x6B, sizeof(data));
-    CHECK(conn->SendData(data, sizeof(data), 2000));
-
-    // The first poll advances the pacing clock, then discovers the full
-    // window. The next wake must be the retransmission timer, not another
-    // pacing quantum; ACK/window recovery will flush the pending bytes.
-    conn->OnPoll(2000);
-    CHECK(80 == conn->SndInflight());
-    CHECK(120 == conn->PendingSendBytes());
-    CHECK(0 != conn->NextRetransmitTime());
-    CHECK(conn->NextTimerDeadline() == conn->NextRetransmitTime());
-}
-
 static void TestPersistIntervalPreservedAcrossRecovery() {
     // Regression pin for the persist_base_ fix: the user-configured probe
     // interval must survive a window-recovery episode (the three recovery
@@ -274,7 +251,6 @@ int main() {
     xtcp::buf::InitPools();
     CHECK(xtcp::cc::RegisterCongestionControl(kPersistPaced));
     TestZeroWindowProbe();
-    TestFullWindowSuppressesPacingWake();
     TestPersistIntervalPreservedAcrossRecovery();
     TestLostProbeByteRecoverable();
     xtcp::buf::ShutdownPools();

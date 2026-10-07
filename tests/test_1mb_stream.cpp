@@ -209,12 +209,17 @@ static void Run1MiB(const char* tag, UInt32 drop_every, const std::string& send_
     WriteFile(send_path, payload);
 
     // Send the full 1 MiB (chunked), pumping with the drop policy.
+    // The hang guard is WALL-CLOCK, not iterations: with burst-driven pacing
+    // (patch 0005) a no-progress iteration is nearly free, so an iteration
+    // count cannot bound the transfer time - loss recovery is RTO/RACK-paced
+    // (hundreds of ms), which a fast-spinning iteration budget can undershoot.
     UInt32 sent = 0, first_seen = 0;
     std::vector<UInt32> dropped;
-    const UInt32 guard_max = 40000;
-    UInt32 guard = 0;
-    while (sent < kTotal && guard_max > ++guard) {
+    const auto send_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (sent < kTotal && std::chrono::steady_clock::now() < send_deadline) {
         const UInt32 chunk = (kTotal - sent < 4096) ? (kTotal - sent) : 4096;
+        const UInt32 prev_sent = sent;
+        const std::size_t prev_recv = received.size();
         if (stack_a.Send(conn, payload.data() + sent, chunk)) {
             sent += chunk;
         }
@@ -222,6 +227,9 @@ static void Run1MiB(const char* tag, UInt32 drop_every, const std::string& send_
         PumpDrop(backend_b, backend_a, drop_every, first_seen, dropped);
         stack_a.PollAckTimers();
         stack_b.PollAckTimers();
+        if (prev_sent == sent && prev_recv == received.size()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
     // Drain until the receiver has everything.
     for (UInt32 i = 0; i < 4000 && received.size() < kTotal; ++i) {

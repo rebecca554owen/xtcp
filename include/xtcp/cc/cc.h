@@ -42,6 +42,24 @@ namespace xtcp {
             UInt32  is_app_limited = 0;
         };
 
+        /** Read-only KCC model state; bandwidth is Q24 bytes/us. */
+        struct KccTelemetrySnapshot {
+            UInt64 max_bw_q24 = 0;
+            UInt64 full_bw_q24 = 0;
+            UInt64 total_delivered = 0;
+            UInt64 round_sample_delivered = 0;
+            UInt64 round_sample_interval_us = 0;
+            UInt64 last_sample_delivered = 0;
+            UInt64 last_sample_interval_us = 0;
+            UInt32 rtt_round = 0;
+            UInt32 min_rtt_us = 0;
+            UInt32 full_bw_count = 0;
+            UInt32 full_bw_reached = 0;
+            UInt32 mode = 0;  // 0=STARTUP, 1=PROBE_BW, 2=DRAIN
+            UInt32 sample_count = 0;
+            UInt32 has_seen_rtt = 0;
+        };
+
         /**
          * @brief CA events (kernel enum tcp_ca_event equivalent).
          */
@@ -69,6 +87,7 @@ namespace xtcp {
             void (*cong_control)(XtcpConnCc* sk, const RateSample* rs) = NULLPTR;
             UInt32 (*reinit_ssthresh)(XtcpConnCc* sk) = NULLPTR;
             Byte    flags = 0;
+            bool (*kcc_telemetry)(const XtcpConnCc* sk, KccTelemetrySnapshot& out) = NULLPTR;
         };
 
         /**

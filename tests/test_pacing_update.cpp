@@ -183,6 +183,15 @@ static void TestStaleDeadlineReset() {
 
     // The CC saw the ACK and raised the rate to the high value.
     CHECK(kPacingHigh == stack_a.ConnPacingRate(conn));
+    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
+    CHECK(telemetry.rate_change_events >= 1);
+    CHECK(telemetry.rate_change_with_pending >= 1);
+    CHECK(telemetry.rate_change_old_rate_sum >= kPacingLow);
+    CHECK(telemetry.rate_change_new_rate_sum >= kPacingHigh);
+    CHECK(telemetry.rate_change_deadline_active >= 1);
+    CHECK(telemetry.rate_change_deadline_remaining_us_sum > 0);
+    CHECK(0 == telemetry.rate_change_flush_packets);
+    CHECK(0 == telemetry.rate_change_flush_bytes);
     // Transmission recovered: every byte arrived, nothing is gated.
     CHECK(kTotal == received.size());
     CHECK(0 == std::memcmp(received.data(), payload.data(), kTotal));

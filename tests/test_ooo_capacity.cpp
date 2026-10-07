@@ -167,10 +167,58 @@ static void TestDefaultKeepsLegacyCap() {
     CHECK(1295 == min_ooo_win);
 }
 
+static void TestDetailedResumeReportsFullOooWindow() {
+    TxLog log;
+    xtcp::core::Endpoint local;
+    local.family = 4;
+    local.addr[0] = 0xC0A80102;
+    local.port = 40002;
+    xtcp::core::Endpoint remote;
+    remote.family = 4;
+    remote.addr[0] = 0x0A000001;
+    remote.port = 443;
+
+    const UInt32 iss = 100, irs = 200;
+    xtcp::core::TcpConn conn(
+        xtcp::core::TcpState::kEstablished, local, remote, iss, irs, MakeSink(log));
+    conn.SetRcvBuf(1);
+    conn.SetRecvHandler([](const Byte*, UInt32) { return false; });
+    const Byte payload = 0x6E;
+    const std::vector<Byte> rejected = BuildSegment(remote.port, local.port,
+        irs + 1, iss + 1, xtcp::core::kFlagAck | xtcp::core::kFlagPsh, &payload, 1);
+    conn.OnSegment(rejected.data(), static_cast<UInt32>(rejected.size()));
+    const std::vector<Byte> ooo = BuildSegment(remote.port, local.port,
+        irs + 2, iss + 1, xtcp::core::kFlagAck | xtcp::core::kFlagPsh, &payload, 1);
+    conn.OnSegment(ooo.data(), static_cast<UInt32>(ooo.size()));
+
+    const xtcp::core::ReceiveStateSnapshot before = conn.ReceiveState();
+    CHECK(before.rcv_blocked);
+    CHECK(before.ooo_bytes == 1);
+    CHECK(before.window == 1);
+    CHECK(before.advertised_window == 0);
+    CHECK(conn.ResumeReceiveDetailed() ==
+        xtcp::core::ReceiveResumeResult::kReceiveWindowFull);
+    const xtcp::core::ReceiveStateSnapshot after = conn.ReceiveState();
+    CHECK(!after.rcv_blocked);
+    CHECK(after.ooo_bytes == after.window);
+    CHECK(after.advertised_window == 0);
+    CHECK(!conn.ResumeReceive());
+
+    xtcp::core::TcpConn compat(
+        xtcp::core::TcpState::kEstablished, local, remote, iss + 1, irs + 1, MakeSink(log));
+    compat.SetRecvHandler([](const Byte*, UInt32) { return false; });
+    const std::vector<Byte> compat_rejected = BuildSegment(remote.port, local.port,
+        irs + 2, iss + 2, xtcp::core::kFlagAck | xtcp::core::kFlagPsh, &payload, 1);
+    compat.OnSegment(compat_rejected.data(), static_cast<UInt32>(compat_rejected.size()));
+    CHECK(compat.ResumeReceive());
+    CHECK(!compat.ResumeReceive());
+}
+
 int main() {
     xtcp::buf::InitPools();
     TestOooCapacityFollowsRcvBuf();
     TestDefaultKeepsLegacyCap();
+    TestDetailedResumeReportsFullOooWindow();
     xtcp::buf::ShutdownPools();
     std::fprintf(stderr, g_failures ? "OOO_CAPACITY: FAILED (%d)\n" : "OOO_CAPACITY: ALL PASSED\n", g_failures);
     return g_failures ? 1 : 0;

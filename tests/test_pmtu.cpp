@@ -149,7 +149,9 @@ int main() {
         CHECK(0 != conn);
         Pump(backend_a, backend_b, stack_a, stack_b);
 
-        // Send with the negotiated MSS (1460): wire segments are full-size.
+        // RFC 7323 timestamps consume 12 bytes of TCP option space, so the
+        // timestamp-aware payload cap is 1460 - 12 = 1448 before PMTU lowers
+        // it further.
         const UInt32 kChunk = 4096;
         Byte payload[kChunk];
         std::memset(payload, 0x55, sizeof(payload));
@@ -164,7 +166,7 @@ int main() {
         }
         std::fprintf(stderr, "[pmtu] pre-ICMP max payload=%llu segs=%llu\n",
                      (unsigned long long)g_tx_payload_max, (unsigned long long)g_tx_segs);
-        CHECK(1460 == g_tx_payload_max);  // full-size segments before PMTU
+        CHECK(1448 == g_tx_payload_max);  // full-size timestamped segment
 
         // The router reports fragmentation needed (MTU 576 -> MSS 536).
         InjectIcmpFragNeeded(stack_a, 0x0A000002, 0x0A000001, 40021, 9090, 576);

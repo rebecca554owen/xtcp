@@ -34,6 +34,15 @@
 
 static int g_failures = 0;
 
+static bool HasTcpPayload(const Byte* packet, UInt32 length) {
+    const UInt32 ip_hlen = length >= 20 ? static_cast<UInt32>(packet[0] & 0x0fU) * 4U : 0;
+    const UInt32 tcp_hlen = ip_hlen >= 20 && length >= ip_hlen + 20
+        ? static_cast<UInt32>(packet[ip_hlen + 12] >> 4U) * 4U : 0;
+    const UInt32 ip_total = length >= 4 ? (static_cast<UInt32>(packet[2]) << 8U) | packet[3] : 0;
+    return ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
+           ip_total > ip_hlen + tcp_hlen;
+}
+
 #define CHECK(cond)                                                       \
     do {                                                                  \
         if (!(cond)) {                                                    \
@@ -153,7 +162,7 @@ int main() {
         std::vector<UInt32> flen;
         while (0 != s.backend_a.TxPending()) {
             const UInt32 n = s.backend_a.PollTx(out);
-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
+            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
                 frames.emplace_back(out, out + n);
                 flen.push_back(n);
             } else if (0 < n) {
@@ -196,7 +205,7 @@ int main() {
         std::vector<UInt32> flen;
         while (0 != s.backend_a.TxPending()) {
             const UInt32 n = s.backend_a.PollTx(out);
-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
+            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
                 frames.emplace_back(out, out + n);
                 flen.push_back(n);
             } else if (0 < n) {
@@ -240,7 +249,7 @@ int main() {
         std::vector<UInt32> flen;
         while (0 != s.backend_a.TxPending()) {
             const UInt32 n = s.backend_a.PollTx(out);
-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
+            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
                 frames.emplace_back(out, out + n);
                 flen.push_back(n);
             } else if (0 < n) {
@@ -285,7 +294,7 @@ int main() {
         std::vector<UInt32> flen;
         while (0 != s.backend_a.TxPending()) {
             const UInt32 n = s.backend_a.PollTx(out);
-            if (0 < n && 20 < n && 0 != (out[33] & 0x08) && frames.size() < 4) {
+            if (0 < n && HasTcpPayload(out, n) && frames.size() < 4) {
                 frames.emplace_back(out, out + n);
                 flen.push_back(n);
             } else if (0 < n) {

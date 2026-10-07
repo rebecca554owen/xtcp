@@ -37,6 +37,15 @@
 
 static int g_failures = 0;
 
+static bool HasTcpPayload(const Byte* packet, UInt32 length) {
+    const UInt32 ip_hlen = length >= 20 ? static_cast<UInt32>(packet[0] & 0x0fU) * 4U : 0;
+    const UInt32 tcp_hlen = ip_hlen >= 20 && length >= ip_hlen + 20
+        ? static_cast<UInt32>(packet[ip_hlen + 12] >> 4U) * 4U : 0;
+    const UInt32 ip_total = length >= 4 ? (static_cast<UInt32>(packet[2]) << 8U) | packet[3] : 0;
+    return ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
+           ip_total > ip_hlen + tcp_hlen;
+}
+
 #define CHECK(cond)                                                       \
     do {                                                                  \
         if (!(cond)) {                                                    \
@@ -87,7 +96,7 @@ static void PumpDropEvery(xtcp::ndi::ManualBackend& from, xtcp::ndi::ManualBacke
         if (0 == got) {
             break;
         }
-        const bool data = (got > 33) && (0 != (out[33] & 0x08));
+        const bool data = HasTcpPayload(out, got);
         bool drop = false;
         if (data && 0 != drop_every) {
             const UInt32 seq = (static_cast<UInt32>(out[24]) << 24) |

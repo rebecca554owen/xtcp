@@ -31,12 +31,18 @@ namespace xtcp {
          */
         constexpr UInt32 kMaxPoolPayload = 32768 - kHeaderBytes;
         /**
-         * @brief GSO segment metadata attached to a super-segment.
+         * @brief GSO segment metadata attached to a TSO super-segment.
+         * @note The contract is active only when `segs > 1`. In that case
+         *       `gso_size` is the exact TCP payload bytes per full segment,
+         *       `mss` is the peer MSS used for congestion accounting, and
+         *       `segs` is ceil(TCP payload / gso_size). Ordinary packets carry
+         *       an all-zero value.
          */
         struct SegMeta {
             UInt32 gso_size = 0;  /**< Bytes per GSO segment */
             UInt16 mss      = 0;  /**< TCP MSS */
             UInt16 segs     = 0;  /**< Segment count */
+            bool checksum_partial = false; /**< TCP checksum field contains a pseudo-header seed */
         };
 
         /**
@@ -185,7 +191,7 @@ namespace xtcp {
              */
             UInt32 UseCount() const noexcept;
             /**
-             * @brief GSO metadata (valid when segs > 0).
+             * @brief GSO metadata (valid only when segs > 1; otherwise zero).
              */
             SegMeta& Meta() noexcept { return meta_; }
             /**

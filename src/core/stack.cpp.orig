@@ -1342,8 +1342,6 @@ namespace xtcp {
         // uniformly; signed flows remain software-segmented because hardware
         // segmentation cannot reproduce the TCP-MD5 option per segment.
         conn.SetTsoTx(0 != (caps_ & ndi::kCapTsoTx) && NULLPTR == tx_qdisc_ && !conn.Md5Enabled());
-        conn.SetChecksumPartialTx(0 != (caps_ & ndi::kCapChecksumPartialTx) &&
-                                  4 == local.family);
         // Bug(state-cb): timer-driven transitions (RTO exhaustion, keepalive
         // abort, FIN-WAIT-2 timeout) never reached the application - the only
         // handler call sat on the packet path (OnPacket). Route the
@@ -1476,16 +1474,6 @@ namespace xtcp {
             it->second->conn->LastSendAdmission(out);
     }
 
-    bool XtcpStack::ConnGetKccTelemetry(
-        UInt64 conn_id, cc::KccTelemetrySnapshot& out) const noexcept {
-        out = {};
-        Shard* shard = ShardOf(conn_id);
-        std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
-        auto it = shard->conns_.find(conn_id);
-        return it != shard->conns_.end() && NULLPTR != it->second->conn &&
-            it->second->conn->GetKccTelemetry(out);
-    }
-
     core::AckReleaseTelemetrySnapshot XtcpStack::AckReleaseTelemetry() const noexcept {
         core::AckReleaseTelemetrySnapshot total;
         const auto add = [&total](const core::AckReleaseTelemetrySnapshot& value) noexcept {
@@ -1518,19 +1506,6 @@ namespace xtcp {
             }
         }
         return total;
-    }
-
-    bool XtcpStack::ConnAckReleaseTelemetry(
-        UInt64 conn_id, core::AckReleaseTelemetrySnapshot& out) const noexcept {
-        out = {};
-        Shard* shard = ShardOf(conn_id);
-        std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
-        auto it = shard->conns_.find(conn_id);
-        if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
-            return false;
-        }
-        out = it->second->conn->AckReleaseTelemetry();
-        return true;
     }
 
     core::TsoGateTelemetrySnapshot XtcpStack::TsoGateTelemetry() const noexcept {

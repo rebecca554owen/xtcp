@@ -746,8 +746,6 @@ namespace xtcp {
             void SetTsoTx(bool on) noexcept { tso_tx_ = on; }
             /** @brief Whether TSO direct-sends are enabled. */
             bool TsoTx() const noexcept { return tso_tx_; }
-            /** @brief Enable partial TCP checksum emission for a capable backend. */
-            void SetChecksumPartialTx(bool on) noexcept { checksum_partial_tx_ = on; }
             /** @brief Number of unacknowledged segments (diagnostics/tests:
              *         the TSO-direct gate requires an empty queue). */
             UInt32 RetransQueueSize() const noexcept {
@@ -1315,7 +1313,6 @@ namespace xtcp {
             UInt32      ts_recent_ = 0;          /**< RFC 7323: TsRecent - the peer's TSval of the last in-order segment (PAWS anchor + ts_ecr source) */
             UInt32      ts_recent_stamp_ = 0;    /**< RFC 7323 s5.5: ms clock when TsRecent was stored (PAWS aging - a 24-day idle relaxes the check) */
             bool        tso_tx_ = false;         /**< TSO direct-sends enabled (backend kCapTsoTx + no qdisc) */
-            bool        checksum_partial_tx_ = false; /**< Backend accepts TCP pseudo-header checksum seeds */
             UInt32      retransmit_count_ = 0;   /**< Total retransmissions (RTO + fast) */
             UInt32      rack_losses_ = 0;        /**< RFC 8985 RACK: loss verdicts that entered recovery */
             UInt32      er_losses_ = 0;          /**< RFC 5827 Early Retransmit: ER entries that entered recovery */

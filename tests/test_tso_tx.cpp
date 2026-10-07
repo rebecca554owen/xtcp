@@ -13,6 +13,7 @@
 #include <xtcp/buf/bufref.h>
 #include <xtcp/core/stack.h>
 #include <xtcp/ndi/manual.h>
+#include <xtcp/options/options.h>
 
 #include <atomic>
 #include <chrono>
@@ -41,7 +42,12 @@ public:
     xtcp::ndi::RxHandler peer_;
     std::atomic<UInt64> tx_calls{0};
     std::atomic<UInt64> tx_bytes{0};
+    std::atomic<UInt64> gso_tx_calls{0};
     std::atomic<bool> reject{false};
+    xtcp::buf::SegMeta last_meta{};
+    xtcp::buf::SegMeta last_gso_meta{};
+    UInt32 last_gso_payload = 0;
+    xtcp::buf::SegMeta rejected_meta{};
 
     void SetRxHandler(xtcp::ndi::RxHandler handler) noexcept override {
         rx_ = std::move(handler);
@@ -50,10 +56,19 @@ public:
 
     bool Tx(xtcp::ndi::Packet&& packet) noexcept override {
         if (reject.load(std::memory_order_relaxed)) {
+            rejected_meta = packet.owned.Meta();
             return false;  // ring full: the packet is NOT consumed
         }
         tx_calls.fetch_add(1, std::memory_order_relaxed);
         tx_bytes.fetch_add(packet.len, std::memory_order_relaxed);
+        last_meta = packet.owned.Meta();
+        if (last_meta.segs > 1) {
+            last_gso_meta = last_meta;
+            const UInt32 ip_header = static_cast<UInt32>(packet.data[0] & 0x0f) * 4u;
+            const UInt32 tcp_header = static_cast<UInt32>(packet.data[ip_header + 12] >> 4u) * 4u;
+            last_gso_payload = packet.len - ip_header - tcp_header;
+            gso_tx_calls.fetch_add(1, std::memory_order_relaxed);
+        }
         if (peer_) {
             peer_(std::move(packet));
         }
@@ -99,8 +114,19 @@ int main() {
             stack_a.OnPacket(std::move(buf));
         };
         std::atomic<UInt64> b_recv{0};
+        std::atomic<UInt64> a_recv{0};
+        UInt64 accepted_conn = 0;
+        stack_b.SetAcceptHandler([&accepted_conn](UInt64 id, const xtcp::core::Endpoint&,
+                                                  const xtcp::core::Endpoint&) {
+            accepted_conn = id;
+            return true;
+        });
         stack_b.SetRecvHandler([&b_recv](UInt64, const Byte*, UInt32 len) {
             b_recv.fetch_add(len, std::memory_order_relaxed);
+            return true;
+        });
+        stack_a.SetRecvHandler([&a_recv](UInt64, const Byte*, UInt32 len) {
+            a_recv.fetch_add(len, std::memory_order_relaxed);
             return true;
         });
 
@@ -124,6 +150,14 @@ int main() {
             pump();
         }
         CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn));
+
+        // Custom TCP_MAXSEG must drive the emitted GSO size; timestamps are
+        // negotiated, but the 1400-byte user ceiling is already below the
+        // timestamp-safe 1448-byte path cap.
+        Int32 custom_mss = 1400;
+        CHECK(stack_a.SetOption(conn, xtcp::options::kTcpMaxseg,
+                               &custom_mss, sizeof(custom_mss)));
+        CHECK(1400 == stack_a.ConnPeerMss(conn));
 
         // Grow the congestion window first (slow start needs a few ACK
         // rounds before the cwnd admits a super-segment), then send the
@@ -168,6 +202,12 @@ int main() {
         // itself is a single call, never the ~22 MSS-sized GSO segments).
         const UInt64 tso_calls = backend_a.tx_calls.load() - calls_before;
         CHECK(1 == tso_calls);
+        CHECK(1400 == backend_a.last_gso_meta.gso_size);
+        CHECK(1400 == backend_a.last_gso_meta.mss);
+        CHECK(24 == backend_a.last_gso_meta.segs);
+        const xtcp::core::TsoGateTelemetrySnapshot direct_tso = stack_a.TsoGateTelemetry();
+        CHECK(0 < direct_tso.direct_candidates);
+        CHECK(0 < direct_tso.direct_emitted);
         // Reap the super-segment's ACK (the delayed-ACK fires on a 40ms
         // timer) so the next super-send finds an empty retransmission queue.
         for (UInt32 i = 0; i < 500 && 0 < stack_a.ConnOutstandingSegments(conn); ++i) {
@@ -197,6 +237,7 @@ int main() {
         // dropped), then drained when the ring reopens.
         backend_a.reject.store(true);
         const UInt64 calls_before2 = backend_a.tx_calls.load();
+        const UInt64 gso_calls_before2 = backend_a.gso_tx_calls.load();
         sent = 0;
         for (UInt32 i = 0; i < 2000 && sent < kTotal; ++i) {
             if (stack_a.Send(conn, payload.data() + sent, kTotal - sent)) {
@@ -206,18 +247,97 @@ int main() {
         }
         CHECK(kTotal == sent);
         CHECK(0 == backend_a.tx_calls.load() - calls_before2);  // nothing accepted while closed
+        CHECK(1400 == backend_a.rejected_meta.gso_size);
+        CHECK(1400 == backend_a.rejected_meta.mss);
+        CHECK(24 == backend_a.rejected_meta.segs);
+
+        // A streaming application writes again while that TSO range is still
+        // outstanding. It must remain buffered, then drain as one additional
+        // single-flight TSO frame after the first range is fully ACKed.
+        constexpr UInt32 kBuffered = 16000;
+        CHECK(stack_a.Send(conn, payload.data(), kBuffered));
+        CHECK(0 == backend_a.tx_calls.load() - calls_before2);
         backend_a.reject.store(false);
-        const UInt64 target = 2 * kTotal + 15 * 1024;
+        const UInt64 target = 2 * kTotal + 15 * 1024 + kBuffered;
         for (UInt32 i = 0; i < 500 && b_recv.load() < target; ++i) {
             pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         CHECK(target == b_recv.load());
-        // The drained super-segment was ONE deferred packet, re-emitted as
-        // one Tx call (the retry queue holds it whole).
-        CHECK(1 == backend_a.tx_calls.load() - calls_before2);
-        std::fprintf(stderr, "[tso] backpressure: recv=%llu drain_calls=%llu\n",
+        // The retry queue emits the rejected frame whole; its cumulative ACK
+        // then flushes the buffered range as one more whole TSO frame.
+        CHECK(2 == backend_a.gso_tx_calls.load() - gso_calls_before2);
+        const xtcp::core::TsoGateTelemetrySnapshot buffered_tso = stack_a.TsoGateTelemetry();
+        CHECK(buffered_tso.direct_outstanding > direct_tso.direct_outstanding);
+        CHECK(0 < buffered_tso.flush_candidates);
+        CHECK(0 < buffered_tso.flush_emitted);
+        CHECK(1400 == backend_a.last_gso_meta.gso_size);
+        CHECK(1400 == backend_a.last_gso_meta.mss);
+        CHECK(backend_a.last_gso_payload > backend_a.last_gso_meta.gso_size);
+        CHECK((backend_a.last_gso_payload + backend_a.last_gso_meta.gso_size - 1) /
+              backend_a.last_gso_meta.gso_size == backend_a.last_gso_meta.segs);
+        std::fprintf(stderr, "[tso] backpressure+buffered: recv=%llu drain_calls=%llu\n",
                      (unsigned long long)b_recv.load(),
                      (unsigned long long)(backend_a.tx_calls.load() - calls_before2));
+
+        // Production-shaped streaming: KCC keeps ordinary data in flight and
+        // paces 16KB application writes. TSO must still emit super-segments,
+        // while retaining the one-TSO-in-flight recovery invariant.
+        for (UInt32 i = 0; i < 500 && 0 < stack_a.ConnOutstandingSegments(conn); ++i) {
+            pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(0 == stack_a.ConnOutstandingSegments(conn));
+        CHECK(stack_a.SetCongestionControl(conn, "kcc"));
+        constexpr UInt32 kStreamChunk = 16 * 1024;
+        constexpr UInt32 kStreamWrites = 8;
+        const UInt64 stream_start = b_recv.load();
+        const UInt64 stream_target = stream_start + kStreamChunk * kStreamWrites;
+        const UInt64 stream_gso_before = backend_a.gso_tx_calls.load();
+        for (UInt32 i = 0; i < kStreamWrites; ++i) {
+            bool accepted = false;
+            for (UInt32 retry = 0; retry < 3000 && !accepted; ++retry) {
+                accepted = stack_a.Send(conn, payload.data(), kStreamChunk);
+                pump();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            CHECK(accepted);
+        }
+        for (UInt32 i = 0; i < 3000 && b_recv.load() < stream_target; ++i) {
+            pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(stream_target == b_recv.load());
+        CHECK(0 < backend_a.gso_tx_calls.load() - stream_gso_before);
+        CHECK(1400 == backend_a.last_gso_meta.gso_size);
+        CHECK(1 < backend_a.last_gso_meta.segs);
+        std::fprintf(stderr, "[tso] kcc-stream: recv=%llu gso_calls=%llu\n",
+                     (unsigned long long)(b_recv.load() - stream_start),
+                     (unsigned long long)(backend_a.gso_tx_calls.load() - stream_gso_before));
+
+        // Download shape: the listener/accept side is the bulk sender. It must
+        // inherit kCapTsoTx just like an active Connect path.
+        CHECK(0 != accepted_conn);
+        for (UInt32 i = 0; i < 500 && 0 < stack_b.ConnOutstandingSegments(accepted_conn); ++i) {
+            pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(stack_b.SetCongestionControl(accepted_conn, "kcc"));
+        const UInt64 reverse_gso_before = backend_b.gso_tx_calls.load();
+        const UInt64 reverse_target = a_recv.load() + kStreamChunk;
+        CHECK(stack_b.Send(accepted_conn, payload.data(), kStreamChunk));
+        for (UInt32 i = 0; i < 3000 && a_recv.load() < reverse_target; ++i) {
+            pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(reverse_target == a_recv.load());
+        CHECK(0 < backend_b.gso_tx_calls.load() - reverse_gso_before);
+        CHECK(stack_b.ConnPeerMss(accepted_conn) == backend_b.last_gso_meta.mss);
+        CHECK(0 < backend_b.last_gso_meta.gso_size);
+        CHECK(1 < backend_b.last_gso_meta.segs);
+        std::fprintf(stderr, "[tso] accept-side: recv=%llu gso_calls=%llu\n",
+                     (unsigned long long)a_recv.load(),
+                     (unsigned long long)(backend_b.gso_tx_calls.load() - reverse_gso_before));
     }
     xtcp::buf::ShutdownPools();
     std::fprintf(stderr, g_failures ? "TSO_TX: FAILED (%d)\n" : "TSO_TX: ALL PASSED\n", g_failures);

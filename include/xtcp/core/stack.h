@@ -12,6 +12,7 @@
 #include <xtcp/core/ip.h>
 #include <xtcp/core/scheduler.h>
 #include <xtcp/core/tcp.h>
+#include <xtcp/cc/cc.h>
 #include <xtcp/mimt/mimt.h>
 #include <xtcp/core/syncookies.h>
 #include <xtcp/qdisc/qdisc.h>
@@ -139,6 +140,16 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
          */
         bool Send(UInt64 conn_id, const Byte* data, UInt32 len) noexcept;
         /**
+         * @brief Attempts to reopen a checked-handler-blocked receive window.
+         * @param state Optional post-attempt receive state snapshot.
+         */
+        core::ReceiveResumeResult ResumeReceiveDetailed(
+            UInt64 conn_id, core::ReceiveStateSnapshot* state = NULLPTR) noexcept;
+        bool ResumeReceive(UInt64 conn_id) noexcept {
+            return core::ReceiveResumeResult::kResumed == ResumeReceiveDetailed(conn_id);
+        }
+        bool ReceiveState(UInt64 conn_id, core::ReceiveStateSnapshot& state) const noexcept;
+        /**
          * @brief Sends a SYN with early data (TCP Fast Open, RFC 7413).
          * @return True when the SYN was emitted (SynSent); the data rides
          *         the SYN only when a cached cookie exists, otherwise it is
@@ -198,8 +209,8 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
           *        application buffer is full): the TCP layer rolls RCV.NXT
           *        back, advertises a zero receive window (RFC 1122 s4.2.3.4)
           *        and the peer persists instead of retransmitting into an
-          *        unusable window. When the app accepts again, the window
-          *        reopens and the stream resumes.
+          *        unusable window. Call ResumeReceive() after application
+          *        capacity becomes available to advertise the reopened window.
           * @warning Same reentrancy/lifetime rules as SetRecvHandler.
           */
          void SetRecvHandlerChecked(RecvHandlerChecked handler) noexcept { recv_handler_ = std::move(handler); }
@@ -295,6 +306,26 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
          * @return Number of timer events fired across all connections.
          */
         UInt32 PollAckTimers() noexcept;
+        /**
+         * @brief Sentinel returned by NextTimerDeadlineUs() when no timer
+         *        work is pending anywhere in the stack.
+         * @note  OPENPPP2 integration patch (tools/xtcp-patches/
+         *        0001-next-timer-deadline.patch).
+         */
+        static constexpr UInt64 kNoTimerDeadline = ~static_cast<UInt64>(0);
+        /**
+         * @brief Earliest pending timer deadline across all connections
+         *        (steady-clock microseconds, the PollAckTimers clock).
+         * @return The minimum of every per-connection timer deadline and the
+         *         qdisc pacing time; a value at or below the current clock
+         *         means PollAckTimers is due now; kNoTimerDeadline when
+         *         nothing is pending (the next packet/send/close arms the
+         *         next deadline).
+         * @note  O(1) when every shard is idle (the same sweep hints the
+         *        PollAckTimers fast path uses); O(live connections) only on
+         *        shards with armed timers.
+         */
+        UInt64 NextTimerDeadlineUs() noexcept;
         /**
          * @brief Total live connections (all shards).
          */
@@ -473,6 +504,28 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
             out.inflight = it->second->conn->InflightBytes();
             return true;
         }
+        /** @brief Reads optional KCC state for one connection. */
+        bool ConnGetKccTelemetry(
+            UInt64 conn_id, cc::KccTelemetrySnapshot& out) const noexcept;
+        /**
+         * @brief Reads the latest SendData rejection snapshot for a connection.
+         * @return True when the connection exists; @a out is zeroed on failure.
+         * @note Diagnostics only; the snapshot is updated only when SendData
+         *       rejects application data.
+         */
+        bool ConnLastSendAdmission(UInt64 conn_id,
+                                   core::SendAdmissionSnapshot& out) const noexcept;
+        /**
+         * @brief Aggregates read-only ACK-release telemetry across live connections.
+         */
+        core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
+        /** Reads cumulative ACK-release telemetry for one connection. */
+        bool ConnAckReleaseTelemetry(
+            UInt64 conn_id, core::AckReleaseTelemetrySnapshot& out) const noexcept;
+        /**
+         * @brief Aggregates read-only super-MSS TSO gate telemetry.
+         */
+        core::TsoGateTelemetrySnapshot TsoGateTelemetry() const noexcept;
         /**
          * @brief Sets the algorithm applied to all new connections.
          * @param name Registered algorithm name; NULLPTR/empty = Reno.

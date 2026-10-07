@@ -29,8 +29,11 @@ namespace xtcp {
              *        super-MSS sends straight through when the retransmission
              *        queue is empty, the window/cwnd fit, and the pool's
              *        biggest class holds the super-segment (32KB). The RTO
-             *        path re-emits it whole. Backends without the cap get
-             *        MSS-sized segments as before.
+             *        path re-emits it whole. A TSO packet is identified only
+             *        by `packet.owned.Meta().segs > 1`; its metadata supplies
+             *        the exact segmentation size. Backends must not infer TSO
+             *        from packet length. Backends without the cap get MSS-sized
+             *        segments as before.
              */
             kCapTsoTx       = 0x0002,  /**< Hardware TSO offload on tx */
             /**
@@ -41,6 +44,14 @@ namespace xtcp {
              *        it receives carry valid checksums.
              */
             kCapChecksumTx  = 0x0004,  /**< Hardware TX checksum offload */
+            /**
+             * @brief Backend accepts TCP packets with a partial checksum
+             *        seed carried in `BufRef::Meta().checksum_partial`.
+             *        Unlike kCapChecksumTx, this changes packet contents and
+             *        requires an explicit downstream completion/validation
+             *        contract.
+             */
+            kCapChecksumPartialTx = 0x0008,
         };
 
         /**
@@ -48,7 +59,10 @@ namespace xtcp {
          * @note Ownership is transferable. When `owned` is non-empty the
          *       packet owns a pool buffer (zero-copy rx: the stack adopts it
          *       without copying); otherwise `data` borrows a buffer and the
-         *       stack must copy it into a pool block.
+         *       stack must copy it into a pool block. On tx, `owned.Meta()` is
+         *       all zero for an ordinary packet. For a TSO super-segment its
+         *       `segs` is greater than one and carries the segmentation
+         *       contract documented by buf::SegMeta.
          */
         struct Packet {
             Byte*       data     = NULLPTR;  /**< Packet buffer (borrowed or owned.payload) */

@@ -121,6 +121,7 @@ if(XTCP_BUILD_TESTS)
         test_ts_paws
         test_ts_wrap
         test_ts_both_sides
+        test_rto_timestamp_mtu
         test_ts_ooo_drain
         test_urgent
         test_conn_info
@@ -185,6 +186,7 @@ if(XTCP_BUILD_TESTS)
         test_mss_negotiation
         test_stack
         test_ooo_capacity
+        test_ooo_frontier
         test_options
         test_options_stack
         test_syncookies
@@ -515,7 +517,6 @@ if(XTCP_BUILD_PLUGINS)
         LIBRARY_OUTPUT_DIRECTORY $<TARGET_FILE_DIR:test_plugin>
         RUNTIME_OUTPUT_DIRECTORY $<TARGET_FILE_DIR:test_plugin>)
 endif()
-
 
 
 

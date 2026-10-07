@@ -169,8 +169,12 @@ static void TestSendBufQuota() {
 
     Byte data[2048];
     std::memset(data, 0xBB, sizeof(data));
-    // Fill the quota with MSS-sized sends (1460 + 1460 + 1176).
+    // Without negotiated timestamps, the normal IPv4 MSS remains a full
+    // 1460-byte payload in a 1500-byte wire packet.
     CHECK(conn.SendData(data, 1460, 1000));
+    CHECK(1 == log.size());
+    CHECK(1500 == log.front().Len());
+    // Fill the remaining quota with MSS-sized sends (1460 + 1176).
     CHECK(conn.SendData(data, 1460, 1000));
     CHECK(conn.SendData(data, 1176, 1000));
     CHECK(4096 == conn.InflightBytes());

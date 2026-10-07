@@ -153,10 +153,26 @@ static void TestPacingGate() {
     stack_a.PollAckTimers();
     Pump(backend_a, backend_b);
 
-    // Exactly one MSS may leave under the pacing gate; the rest re-queues.
-    CHECK(received.size() == kMss);
-    std::fprintf(stderr, "[pacing_flush] gate: one flush emitted %u bytes (expect %u = 1 MSS)\n",
-                 (UInt32)received.size(), kMss);
+    // Exactly one segment may leave under the pacing gate; the rest re-queues.
+    // The payload cap is timestamp-aware (patch 0004): with TSopt negotiated a
+    // segment carries 1460 - 12 = 1448 bytes, not a full MSS.
+    constexpr UInt32 kSegPayload = kMss - 12;  // TSopt (12 B) negotiated above
+    CHECK(received.size() == kSegPayload);
+    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
+    xtcp::core::AckReleaseTelemetrySnapshot conn_telemetry;
+    CHECK(stack_a.ConnAckReleaseTelemetry(conn, conn_telemetry));
+    CHECK(conn_telemetry.pending_flush_attempts == telemetry.pending_flush_attempts);
+    CHECK(conn_telemetry.pending_flush_pacing == telemetry.pending_flush_pacing);
+    xtcp::core::AckReleaseTelemetrySnapshot missing_telemetry;
+    missing_telemetry.valid_acks = 99;
+    CHECK(!stack_a.ConnAckReleaseTelemetry(0, missing_telemetry));
+    CHECK(0 == missing_telemetry.valid_acks);
+    CHECK(telemetry.pending_flush_attempts >= 1);
+    CHECK(telemetry.tx_sink_packets >= 1);
+    CHECK(telemetry.tx_sink_bytes >= kSegPayload);
+    CHECK(telemetry.pending_flush_pacing >= 1);
+    std::fprintf(stderr, "[pacing_flush] gate: one flush emitted %u bytes (expect %u = 1 segment, MSS - TSopt)\n",
+                 (UInt32)received.size(), kSegPayload);
 }
 
 /**
@@ -208,6 +224,13 @@ static void TestLargeFlushIntegrity() {
 
     CHECK(kTotal == received.size());
     CHECK(0 == std::memcmp(received.data(), payload.data(), kTotal));
+    const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();
+    CHECK(telemetry.valid_acks > 0);
+    CHECK(telemetry.ack_advance_events > 0);
+    CHECK(telemetry.ack_advance_bytes > 0);
+    CHECK(telemetry.pending_flush_attempts > 0);
+    CHECK(telemetry.tx_sink_packets > 0);
+    CHECK(telemetry.tx_sink_bytes >= kTotal);
     std::fprintf(stderr, "[pacing_flush] integrity: %u/%u bytes, %s\n",
                  (UInt32)received.size(), kTotal,
                  (kTotal == received.size() && 0 == std::memcmp(received.data(), payload.data(), kTotal))

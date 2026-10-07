@@ -491,31 +491,6 @@ namespace {
         }
     }
 
-    bool KccTelemetry(const XtcpConnCc* sk, KccTelemetrySnapshot& out) noexcept {
-        out = {};
-        if (NULLPTR == sk || NULLPTR == sk->ca_priv) {
-            return false;
-        }
-        const KccState* k = static_cast<const KccState*>(sk->ca_priv);
-        out.max_bw_q24 = k->max_bw;
-        out.full_bw_q24 = k->full_bw;
-        out.total_delivered = k->total_delivered;
-        out.round_sample_delivered = k->round_sample_delivered;
-        out.round_sample_interval_us = k->round_sample_interval_us;
-        out.last_sample_delivered = k->total_delivered >= k->prev_delivered
-            ? k->total_delivered - k->prev_delivered : 0;
-        out.last_sample_interval_us = k->last_ack_us >= k->prev_ack_us
-            ? k->last_ack_us - k->prev_ack_us : 0;
-        out.rtt_round = k->rtt_cnt;
-        out.min_rtt_us = kMinRttUninit == k->min_rtt_us ? 0 : k->min_rtt_us;
-        out.full_bw_count = k->full_bw_cnt;
-        out.full_bw_reached = k->full_bw_reached;
-        out.mode = k->mode;
-        out.sample_count = k->sample_cnt;
-        out.has_seen_rtt = k->has_seen_rtt;
-        return true;
-    }
-
     UInt32 KccSsthresh(XtcpConnCc* sk) noexcept {
         sk->snd_cwnd = kCwndMinTarget;
         return kCwndMinTarget;
@@ -535,7 +510,6 @@ namespace {
             KccMain,          /* cong_control */
             NULLPTR,
             0,
-            KccTelemetry,
         };
         return ops;
     }

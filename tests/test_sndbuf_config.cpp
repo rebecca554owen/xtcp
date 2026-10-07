@@ -72,6 +72,17 @@ static void TestDirectFsmQuota() {
     std::vector<Byte> chunk(16384, 0x5C);
     CHECK(conn.SendData(chunk.data(), 16384, 0));
     CHECK(!conn.SendData(chunk.data(), 16384, 0));  // quota exhausted
+    xtcp::core::SendAdmissionSnapshot snapshot;
+    CHECK(conn.LastSendAdmission(snapshot));
+    CHECK(snapshot.generation == 1);
+    CHECK(snapshot.reason == xtcp::core::SendAdmissionReason::kSndBufQuota);
+    CHECK(snapshot.state == xtcp::core::TcpState::kEstablished);
+    CHECK(snapshot.attempted_len == 16384);
+    // The 16 KiB chunk exceeds the initial congestion window and is queued;
+    // the quota rejection therefore reports buffered rather than wire bytes.
+    CHECK(snapshot.pending_send == 16384);
+    CHECK(snapshot.inflight == 0);
+    CHECK(snapshot.snd_buf == 16384);
     std::fprintf(stderr, "[sndbuf] direct-FSM quota enforced\n");
 }
 
@@ -118,6 +129,11 @@ static void TestStackLevelQuota() {
     std::vector<Byte> chunk(16384, 0x5D);
     CHECK(stack_a.Send(conn, chunk.data(), 16384));
     CHECK(!stack_a.Send(conn, chunk.data(), 16384));  // quota: pending 16384 + 16384 > 16384
+    xtcp::core::SendAdmissionSnapshot snapshot;
+    CHECK(stack_a.ConnLastSendAdmission(conn, snapshot));
+    CHECK(snapshot.reason == xtcp::core::SendAdmissionReason::kSndBufQuota);
+    CHECK(snapshot.attempted_len == 16384);
+    CHECK(snapshot.snd_buf == 16384);
 
     // Drain: the flush + ACK clock free the quota and the full stream lands.
     UInt32 sent = 16384, guard = 0;

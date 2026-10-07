@@ -197,13 +197,6 @@ static void TestKccRoundBoundaryTracksCurrentRtt() {
         CHECK(max_bw == ref.max_bw);
     }
     CHECK(3 == ref.rtt_cnt);
-    xtcp::cc::KccTelemetrySnapshot telemetry;
-    CHECK(ops->kcc_telemetry != NULLPTR);
-    CHECK(ops->kcc_telemetry(&sk, telemetry));
-    CHECK(static_cast<UInt64>(max_bw) == telemetry.max_bw_q24);
-    CHECK(ref.rtt_cnt == telemetry.rtt_round);
-    CHECK(0 < telemetry.last_sample_delivered);
-    CHECK(0 < telemetry.last_sample_interval_us);
     ops->release(&sk);
 }
 

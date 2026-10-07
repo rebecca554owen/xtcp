@@ -162,6 +162,26 @@ static void TestMigration() {
     conn2.OnSegment(seg, sizeof(seg), 4000);
     CHECK(105 == conn2.SndUna());
     CHECK(0 == conn2.InflightBytes());
+
+    // A partially flushed send retains its consumed prefix in-place. A
+    // migration checkpoint must expose/copy only the live suffix and restore
+    // the same logical byte count, not the full backing vector.
+    std::vector<xtcp::buf::BufRef> pending_sink;
+    xtcp::core::TcpConn pending_conn(
+        xtcp::core::TcpState::kEstablished, local, remote, 300, 400,
+        [&pending_sink](xtcp::buf::BufRef&& p) { pending_sink.push_back(std::move(p)); });
+    std::vector<Byte> pending_data(32000, 0x5A);
+    CHECK(pending_conn.SendData(pending_data.data(), static_cast<UInt32>(pending_data.size()), 1000));
+    pending_conn.FlushPendingSend(2000);
+    CHECK(0 < pending_conn.PendingSendBytes());
+    const xtcp::core::TcpConn::ConnCheckpoint pending_ckpt = pending_conn.MakeCheckpoint();
+    CHECK(pending_ckpt.pending_send_offset == 0);
+    CHECK(pending_ckpt.pending_send.size() == pending_conn.PendingSendBytes());
+    xtcp::core::TcpConn pending_restored(
+        xtcp::core::TcpState::kClosed, local, remote, 300, 400,
+        [&pending_sink](xtcp::buf::BufRef&& p) { pending_sink.push_back(std::move(p)); });
+    pending_restored.ApplyCheckpoint(pending_ckpt);
+    CHECK(pending_ckpt.pending_send.size() == pending_restored.PendingSendBytes());
 }
 
 int main() {

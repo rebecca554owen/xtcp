@@ -100,9 +100,15 @@ static void TestRejectionAloneAdvertisesWindowZero() {
     Byte payload[1460];
     std::memset(payload, 0x5A, sizeof(payload));
     CHECK(stack_a.Send(conn_a, payload, sizeof(payload)));
-    // Deliver A->B only (the rejection must arm the window-0 ACK).
+    // Deliver A->B only (the rejection must arm the window-0 ACK). The
+    // connection may have a pacing deadline after the handshake, so wait until
+    // this one data segment actually leaves A before testing B in isolation.
     {
         Byte out[65536];
+        for (UInt32 round = 0; round < 100 && 0 == backend_a.TxPending(); ++round) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            stack_a.PollAckTimers();
+        }
         while (0 != backend_a.TxPending()) {
             const UInt32 n = backend_a.PollTx(out);
             if (0 < n) {
@@ -171,13 +177,27 @@ int main() {
         b_local.port = 9130;
         CHECK(stack_b.Listen(b_local));
 
+        std::atomic<UInt64> conn_b{0};
+        stack_b.SetAcceptHandler([&](UInt64 id, const xtcp::core::Endpoint&,
+                                     const xtcp::core::Endpoint&) {
+            conn_b.store(id, std::memory_order_relaxed);
+            return true;
+        });
         std::atomic<bool> accept_data{false};  // app backpressure ON initially
         std::atomic<UInt64> b_recv{0};
-        stack_b.SetRecvHandlerChecked([&](UInt64, const Byte*, UInt32 len) {
+        std::atomic<bool> payload_mismatch{false};
+        stack_b.SetRecvHandlerChecked([&](UInt64, const Byte* data, UInt32 len) {
             if (!accept_data.load(std::memory_order_relaxed)) {
                 return false;  // backpressure: reject
             }
-            b_recv.fetch_add(len, std::memory_order_relaxed);
+            const UInt64 offset = b_recv.load(std::memory_order_relaxed);
+            for (UInt32 i = 0; i < len; ++i) {
+                if (data[i] != static_cast<Byte>((offset + i) & 0xFF)) {
+                    payload_mismatch.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            }
+            b_recv.store(offset + len, std::memory_order_relaxed);
             return true;
         });
 
@@ -186,10 +206,17 @@ int main() {
         Pump(backend_a, backend_b, stack_a, stack_b);
         Pump(backend_a, backend_b, stack_a, stack_b);
         CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn_a));
+        CHECK(0 != conn_b.load(std::memory_order_relaxed));
+        // Keep persist far outside this test: recovery must be driven solely by
+        // ResumeReceive's immediate window update, not a peer probe/RTO.
+        stack_a.SetPersistInterval(conn_a, 60u * 1000u * 1000u);
 
         // A sends a large stream while B backpressures.
         constexpr UInt32 kTotal = 65536;
-        std::vector<Byte> payload(kTotal, 0x4D);
+        std::vector<Byte> payload(kTotal);
+        for (UInt32 i = 0; i < kTotal; ++i) {
+            payload[i] = static_cast<Byte>(i & 0xFF);
+        }
         for (UInt32 i = 0; i < 4; ++i) {
             stack_a.Send(conn_a, payload.data() + i * 16384, 16384);
         }
@@ -259,15 +286,49 @@ int main() {
         std::fprintf(stderr, "[zero-window] A snd_wnd=%u (expect 0 while blocked)\n", snd_wnd);
         CHECK(0 == snd_wnd);  // CORE: the peer sees the zero window
 
-        // The app recovers: the window reopens and the stream completes.
+        // The app recovers: ResumeReceive must emit a nonzero window update
+        // immediately, without waiting for peer persist/RTO. A duplicate call is
+        // idempotent and must not emit another ACK.
         accept_data.store(true, std::memory_order_relaxed);
+        Byte resume_ack[65536];
+        while (0 != backend_b.TxPending()) {
+            (void)backend_b.PollTx(resume_ack);  // discard pre-resume zero-window ACKs
+        }
+        const UInt64 accepted_conn = conn_b.load(std::memory_order_relaxed);
+        xtcp::core::ReceiveStateSnapshot receive_state;
+        CHECK(stack_b.ReceiveState(accepted_conn, receive_state));
+        CHECK(receive_state.rcv_blocked);
+        CHECK(receive_state.window == 65535);
+        CHECK(receive_state.ooo_bytes < receive_state.window);
+        CHECK(receive_state.advertised_window == 0);
+        CHECK(stack_b.ResumeReceiveDetailed(accepted_conn, &receive_state) ==
+            xtcp::core::ReceiveResumeResult::kResumed);
+        CHECK(!receive_state.rcv_blocked);
+        CHECK(receive_state.advertised_window != 0);
+        CHECK(stack_b.ResumeReceiveDetailed(accepted_conn, &receive_state) ==
+            xtcp::core::ReceiveResumeResult::kNotBlocked);
+        CHECK(stack_b.ResumeReceiveDetailed(~UInt64{0}, &receive_state) ==
+            xtcp::core::ReceiveResumeResult::kConnectionMissing);
+        CHECK(!stack_b.ReceiveState(~UInt64{0}, receive_state));
+        CHECK(!stack_b.ResumeReceive(accepted_conn));
+        CHECK(backend_b.TxPending() == 1);
+        const UInt32 resume_ack_len = backend_b.PollTx(resume_ack);
+        CHECK(resume_ack_len >= 40);
+        if (resume_ack_len >= 40) {
+            const UInt32 tcp_off = static_cast<UInt32>(resume_ack[0] & 0x0F) * 4;
+            const UInt16 win = (static_cast<UInt16>(resume_ack[tcp_off + 14]) << 8) |
+                resume_ack[tcp_off + 15];
+            CHECK(win != 0);
+            backend_a.Inject(resume_ack, resume_ack_len, 0x0800);
+        }
+        CHECK(backend_b.TxPending() == 0);
         for (UInt32 i = 0; i < 800 && b_recv.load(std::memory_order_relaxed) < kTotal; ++i) {
             Pump(backend_a, backend_b, stack_a, stack_b);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        std::fprintf(stderr, "[zero-window] recovered b_recv=%llu (expect %u)\n",
+        std::fprintf(stderr, "[zero-window] active-resume b_recv=%llu (expect %u)\n",
                      (unsigned long long)b_recv.load(), kTotal);
-        CHECK(kTotal == b_recv.load(std::memory_order_relaxed));  // CORE: stream resumed
+        CHECK(kTotal == b_recv.load(std::memory_order_relaxed));
+        CHECK(!payload_mismatch.load(std::memory_order_relaxed));
     }
     xtcp::buf::ShutdownPools();
     std::fprintf(stderr, g_failures ? "ZERO_WINDOW_BACKPRESSURE: FAILED (%d)\n" : "ZERO_WINDOW_BACKPRESSURE: ALL PASSED\n", g_failures);

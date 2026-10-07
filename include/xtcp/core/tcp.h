@@ -1216,6 +1216,13 @@ namespace xtcp {
                 UInt32 ts_val = 0; // RFC 7323: the segment's TSval (TsRecent on drain)
             };
             bool TrimOooToFrontier() noexcept;
+            /**
+             * @brief Hard cap on buffered out-of-order segments (M1 fix).
+             * When reached, the lowest-sequence entry is dropped before a
+             * new one is buffered, so a misbehaving peer cannot grow the
+             * reassembly buffer without bound.
+             */
+            static constexpr UInt32 kOooCap = 1024;
             std::map<UInt32, OutSeg> ooo_;       /**< Out-of-order reassembly buffer (seq -> segment) */
             UInt32      ooo_bytes_ = 0;
             /**
